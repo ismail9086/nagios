@@ -1,79 +1,105 @@
 #!/bin/bash
 
-# Exit immediately if a command exits with a non-zero status
+# Exit on error
 set -e
 
+# ========================
 # Variables
+# ========================
 NAGIOS_USER="nagios"
 NAGIOS_GROUP="nagios"
 APACHE_USER="apache"
 NAGIOS_VERSION="4.4.6"
-PLUGINS_VERSION="2.3.3"
 SRC_DIR="/usr/local/src"
 NAGIOS_HOME="/usr/local/nagios"
+NAGIOS_TAR="nagios-${NAGIOS_VERSION}.tar.gz"
+NAGIOS_URL="https://assets.nagios.com/downloads/nagioscore/releases/${NAGIOS_TAR}"
 
-echo "=========================="
-echo "Installing Dependencies..."
-echo "=========================="
+# ========================
+# Installing Dependencies
+# ========================
+echo ">>> Installing Dependencies..."
 sudo yum install -y gcc glibc glibc-common wget unzip httpd php \
-  gd gd-devel perl postfix make net-snmp openssl-devel xinetd
+gd gd-devel perl postfix make net-snmp openssl-devel
 
-echo "=========================="
-echo "Creating Nagios User..."
-echo "=========================="
-sudo useradd $NAGIOS_USER
-sudo groupadd $NAGIOS_GROUP
-sudo usermod -a -G $NAGIOS_GROUP $APACHE_USER
+echo ">>> Dependencies Installed Successfully."
 
-echo "=========================="
-echo "Downloading Nagios Core..."
-echo "=========================="
+# ========================
+# Creating Nagios User
+# ========================
+echo ">>> Creating Nagios User..."
+sudo useradd -r -s /sbin/nologin $NAGIOS_USER || echo "$NAGIOS_USER already exists"
+sudo groupadd -f $NAGIOS_GROUP
+sudo usermod -aG $NAGIOS_GROUP $APACHE_USER
+
+echo ">>> Nagios User Setup Complete."
+
+# ========================
+# Downloading Nagios Core
+# ========================
+echo ">>> Downloading Nagios Core..."
 cd $SRC_DIR
-sudo wget https://assets.nagios.com/downloads/nagioscore/releases/nagios-$NAGIOS_VERSION.tar.gz
-sudo tar zxvf nagios-$NAGIOS_VERSION.tar.gz
-cd nagios-$NAGIOS_VERSION
+sudo wget -q --show-progress $NAGIOS_URL
+sudo tar -zxvf $NAGIOS_TAR
 
-echo "=========================="
-echo "Compiling and Installing Nagios..."
-echo "=========================="
-sudo ./configure --with-httpd-conf=/etc/httpd/conf.d
-sudo make all
+echo ">>> Extracted Nagios Source Code."
+
+# ========================
+# Compiling and Installing
+# ========================
+cd $SRC_DIR/nagios-$NAGIOS_VERSION
+echo ">>> Configuring Nagios..."
+./configure --with-httpd-conf=/etc/httpd/conf.d --with-command-group=$NAGIOS_GROUP
+
+echo ">>> Building Nagios..."
+make all
+
+echo ">>> Installing Nagios..."
 sudo make install
-sudo make install-init
 sudo make install-commandmode
+sudo make install-init
 sudo make install-config
 sudo make install-webconf
 
-echo "=========================="
-echo "Setting Nagios Web Access..."
-echo "=========================="
-sudo htpasswd -bc /usr/local/nagios/etc/htpasswd.users nagiosadmin nagiosadmin
+echo ">>> Nagios Core Installed Successfully."
 
-echo "=========================="
-echo "Downloading and Installing Nagios Plugins..."
-echo "=========================="
-cd $SRC_DIR
-sudo wget https://nagios-plugins.org/download/nagios-plugins-$PLUGINS_VERSION.tar.gz
-sudo tar zxvf nagios-plugins-$PLUGINS_VERSION.tar.gz
-cd nagios-plugins-$PLUGINS_VERSION
-sudo ./configure --with-nagios-user=$NAGIOS_USER --with-nagios-group=$NAGIOS_GROUP
-sudo make
-sudo make install
+# ========================
+# Creating Systemd Service
+# ========================
+echo ">>> Creating Nagios systemd service..."
+sudo tee /etc/systemd/system/nagios.service > /dev/null <<EOF
+[Unit]
+Description=Nagios Core Monitoring Server
+After=network.target httpd.service
 
-echo "=========================="
-echo "Enabling Services..."
-echo "=========================="
-sudo systemctl enable httpd
+[Service]
+Type=forking
+ExecStart=/usr/local/nagios/bin/nagios /usr/local/nagios/etc/nagios.cfg
+ExecReload=/bin/kill -HUP \$MAINPID
+PIDFile=/usr/local/nagios/var/nagios.pid
+User=nagios
+Group=nagios
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
 sudo systemctl enable nagios
 
-echo "=========================="
-echo "Starting Services..."
-echo "=========================="
-sudo systemctl start httpd
-sudo systemctl start nagios
+echo ">>> Nagios systemd service created."
 
-echo "=========================="
-echo "Nagios Installed Successfully!"
-echo "Access it at: http://<your-server-ip>/nagios"
-echo "Username: nagiosadmin | Password: nagiosadmin"
-echo "=========================="
+# ========================
+# Setting Web Access
+# ========================
+echo ">>> Setting Web Access for Nagios..."
+sudo htpasswd -cb /usr/local/nagios/etc/htpasswd.users nagiosadmin nagios123
+
+echo ">>> Web UI credentials created for user: nagiosadmin (password: nagios123)"
+
+# ========================
+# Starting Services
+# ========================
+echo ">>> Starting Apache and Nagios..."
+sudo systemctl restart httpd
+sudo systemctl start nagios
